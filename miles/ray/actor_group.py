@@ -74,7 +74,10 @@ class RayTrainGroup:
             )
             assert os.path.exists(dynlib_path), f"LD_PRELOAD so file {dynlib_path} does not exist."
 
-            env_vars["LD_PRELOAD"] = dynlib_path
+            # Append (don't clobber) any existing LD_PRELOAD from train_env_vars
+            # (e.g. vendored RDMA libs needed for RoCE on system-libibverbs nodes).
+            _existing = env_vars.get("LD_PRELOAD")
+            env_vars["LD_PRELOAD"] = dynlib_path + (f":{_existing}" if _existing else "")
             env_vars["TMS_INIT_ENABLE"] = "1"
             env_vars["TMS_INIT_ENABLE_CPU_BACKUP"] = "1"
 

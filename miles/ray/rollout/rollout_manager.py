@@ -69,29 +69,42 @@ class RolloutManager:
         logger.info(f"import {self.args.rollout_function_path} as generate_rollout function.")
         logger.info(f"import {self.args.eval_function_path} as eval_generate_rollout function.")
 
-        if self.args.debug_train_only:
-            self.servers: dict[str, RolloutServer] = {}
-        else:
-            init_http_client(args)
-            self.servers = start_rollout_servers(args, pg)
-            start_session_server(args)
+        # NOTE: sglang engines are started in `init_servers()` (async), NOT here.
+        # Starting them in __init__ would call a blocking `ray.get` on engine init
+        # inside this async actor's event loop, freezing it and intermittently
+        # deadlocking (engine logs "ready" but the ObjectRef never resolves, so
+        # __init__ never returns and the trainer is never built).
+        self.servers: dict[str, RolloutServer] = {}
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
 
         self._metric_checker = MetricChecker.maybe_create(args)
-
-        # TODO will be replaced by full ft, thus temporarily leave it without modifications
         self._health_monitors = []
-        if not self.args.debug_train_only and self.args.use_fault_tolerance:
+        self._ci_fault_injection_pending = False
+
+    # -------------------------- lifecycle -----------------------------
+
+    async def init_servers(self):
+        """Start the sglang rollout engines (awaited by ``create_rollout_manager``).
+
+        Async on purpose: ``start_rollout_servers`` awaits engine init via
+        ``asyncio.gather`` instead of a blocking ``ray.get``, so this actor's
+        event loop stays responsive and engine init can't deadlock.
+        """
+        if self.args.debug_train_only:
+            self.servers = {}
+            return
+        init_http_client(self.args)
+        self.servers = await start_rollout_servers(self.args, self.pg)
+        start_session_server(self.args)
+        # TODO will be replaced by full ft, thus temporarily leave it without modifications
+        if self.args.use_fault_tolerance:
             for srv in self.servers.values():
                 for group in srv.server_groups:
-                    monitor = RolloutHealthMonitor(group, args)
+                    monitor = RolloutHealthMonitor(group, self.args)
                     monitor.start()
                     self._health_monitors.append(monitor)
             self._ci_fault_injection_pending = self.args.ci_test  # Flag for CI fault injection
-
-    # -------------------------- lifecycle -----------------------------
-    # TODO: may have a `async def init` here later
 
     def dispose(self):
         if self._metric_checker is not None:

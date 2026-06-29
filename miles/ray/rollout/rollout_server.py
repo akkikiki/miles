@@ -13,10 +13,16 @@ from miles.ray.rollout.server_group import ServerGroup
 logger = logging.getLogger(__name__)
 
 
-def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
+async def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
     """Start rollout servers: one per model, each with its own router.
 
     Returns a dict mapping model name -> ``RolloutServer``.
+
+    Async so the engine-init wait uses ``await asyncio.gather(...)`` instead of a
+    blocking ``ray.get(...)``. When called from the async ``RolloutManager`` actor,
+    a blocking ``ray.get`` runs on (and freezes) the actor's asyncio event loop,
+    which intermittently deadlocks engine init (engine logs "ready" but the
+    ObjectRef never resolves). ``recover()`` already awaits these same handles.
     """
     config = _resolve_sglang_config(args)
 
@@ -84,7 +90,7 @@ def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
             gpu_offset += group_cfg.num_gpus
 
         if all_init_handles:
-            ray.get(all_init_handles)
+            await asyncio.gather(*all_init_handles)
 
         for group, new_engine_indices in zip(server_groups, new_engine_indices_per_group, strict=True):
             group.mark_alive(engine_indices=new_engine_indices)

@@ -182,6 +182,10 @@ def create_rollout_manager(args, pg):
         num_cpus=1, num_gpus=0, **(compute_ray_pin_head_options() if args.pin_rollout_manager_to_head else {})
     ).remote(args, pg)
 
+    # Start the sglang engines via the async init path (awaits engine init instead
+    # of a blocking ray.get inside the async actor, which intermittently deadlocked).
+    ray.get(rollout_manager.init_servers.remote())
+
     # calculate num_rollout from num_epoch
     num_rollout_per_epoch = None
     if args.num_rollout is None:

@@ -133,6 +133,17 @@ def convert_deepseekv3_to_hf(args, name, param):
             return [(f"model.layers.{layer_idx}.mlp.gate.weight", param)]
         elif rest == "mlp.router.expert_bias":
             return [(f"model.layers.{layer_idx}.mlp.gate.e_score_correction_bias", param)]
+        elif "indexer" in rest:
+            # GLM-5.2 DSA indexer params use deepseekv4-style names
+            # (self_attention.core_attention.indexer.linear_wq_b/linear_wk/
+            #  k_norm/weights_proj...), which the deepseekv3 indexer cases above
+            # (old self_attention.wq_b.* naming) don't match. The indexer is a
+            # FROZEN base module (not a LoRA target); the rollout engine already
+            # holds it from --hf-checkpoint and it never changes during LoRA RL.
+            # Skip it in the weight-sync instead of raising / risking a wrong
+            # megatron->hf mapping. (Only reached for LoRA runs, where base is frozen.)
+            if args.lora_rank and args.lora_rank > 0:
+                return []
 
     mtp_layer_pattern = r"module\.module\.mtp\.layers\.(\d+)\.(.+)"
     match = re.match(mtp_layer_pattern, name)

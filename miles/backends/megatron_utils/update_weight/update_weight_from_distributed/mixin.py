@@ -80,7 +80,11 @@ class DistBucketedWeightUpdateMixin:
                 f"--pipeline-model-parallel-size 1 (got {args.pipeline_model_parallel_size})."
             )
             self._lora_config = build_lora_sync_config(args)
-            self._lora_loaded = False
+            # Preloaded adapter (--lora-adapter-path, needed to wire the MoE-LoRA
+            # fused-kernel buffers at init) already occupies the slot -> start
+            # "loaded" so the first sync unloads-then-loads instead of erroring
+            # "adapter already loaded".
+            self._lora_loaded = getattr(args, "lora_adapter_path", None) is not None
             self._lora_base_synced = False
             self._hf_weight_iterator = HfWeightIteratorBase.create(
                 args=args,

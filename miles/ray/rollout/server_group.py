@@ -113,6 +113,14 @@ class ServerGroup:
                     "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "true",
                     "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false",
                     "SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE": "false",
+                    # RL updates the LoRA adapter every step; the fused MoE-LoRA
+                    # triton kernel caches per-expert weight pointers and crashes
+                    # (cudaErrorIllegalAddress) on dynamic re-load. Default the
+                    # pure-torch non-fused MoE-LoRA fallback ON for rollout engines.
+                    "SGLANG_MOE_LORA_NONFUSED": "1",
+                    # Engine serves the NVFP4 base + live LoRA via the dequant
+                    # path (triton grouped GEMM); needs shared-experts-fusion off.
+                    "SGLANG_MOE_LORA_NONFUSED_FP4": "1",
                 }.items()
             }
             env_vars.update(dumper_utils.get_sglang_env(self.args))

@@ -102,6 +102,17 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
         provider.num_layers_in_first_pipeline_stage = args.decoder_first_pipeline_num_layers
     if getattr(args, "decoder_last_pipeline_num_layers", None) is not None:
         provider.num_layers_in_last_pipeline_stage = args.decoder_last_pipeline_num_layers
+    # Propagate FP8 / low-precision settings args -> provider. Without this the
+    # bridge-built TransformerConfig keeps fp8=None / fp4=None, so FP8/NVFP4
+    # training is a SILENT no-op on the LoRA path (the standard non-LoRA path gets
+    # these via core_transformer_config_from_args). Mirror them onto the provider.
+    # (Local patch.)
+    for _f in ("fp8", "fp8_recipe", "fp8_margin", "fp8_interval", "fp8_amax_history_len",
+               "fp8_amax_compute_algo", "fp8_param_gather", "fp8_wgrad",
+               "fp4", "fp4_recipe", "fp4_param", "fp4_quantizer_factory",
+               "transformer_impl"):
+        if hasattr(args, _f) and getattr(args, _f) is not None and hasattr(provider, _f):
+            setattr(provider, _f, getattr(args, _f))
     provider.finalize()
 
     lora = create_lora_instance(args)

@@ -67,7 +67,11 @@ class UpdateWeightFromTensor:
         )
         if self.is_lora:
             self._lora_config = build_lora_sync_config(args)
-            self._lora_loaded = False
+            # If an adapter was preloaded into the engine (--lora-adapter-path,
+            # required so the MoE-LoRA fused kernel's buffers are wired at init),
+            # the slot is already occupied. Start "loaded" so the FIRST sync
+            # unloads-then-loads instead of erroring "adapter already loaded".
+            self._lora_loaded = getattr(args, "lora_adapter_path", None) is not None
             self._lora_base_synced = False
 
         # Create IPC gather groups within megatron.
