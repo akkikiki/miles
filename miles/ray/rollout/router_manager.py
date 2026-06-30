@@ -21,10 +21,16 @@ def start_router(args, *, has_pd_disaggregation: bool = False, force_new: bool =
     If ``args.sglang_router_ip`` is already set and ``force_new`` is False,
     skip launching and return the existing values.
     """
-    if not force_new and args.sglang_router_ip is not None:
+    # Treat (ip AND port) as a pre-existing EXTERNAL router and reuse it as-is.
+    # If only the ip is given (no port), we still LAUNCH our own router but BIND it
+    # to that ip — used multi-node to pin the router to the head's cross-node IP
+    # instead of the docker-bridge IP that get_host_info() auto-picks (which the
+    # engine node can't reach). Previously, passing --sglang-router-ip alone hit
+    # this early-return with port=None and produced "http://<ip>:None/generate".
+    if not force_new and args.sglang_router_ip is not None and args.sglang_router_port is not None:
         return args.sglang_router_ip, args.sglang_router_port
 
-    router_ip = _wrap_ipv6(get_host_info()[1])
+    router_ip = args.sglang_router_ip if args.sglang_router_ip is not None else _wrap_ipv6(get_host_info()[1])
     if force_new:
         router_port = find_available_port(random.randint(3000, 4000))
     else:

@@ -55,6 +55,33 @@ class LinearForLastLayer(torch.nn.Linear):
         return logits, None
 
 
+def _qlora_base_recipe(config, base_prec: str):
+    """TE recipe for building the frozen LoRA base in fp8/fp4 (QLoRA).
+
+    Reuses the compute-side recipe builders, so 'fp4' requires the nvfp4 compute
+    config (i.e. FP4=1 / --fp4-recipe nvfp4) and 'fp8' requires an fp8 format
+    (--fp8-format). Raises a clear error otherwise.
+    """
+    if base_prec == "fp4":
+        from megatron.core.fp4_utils import get_fp4_recipe
+
+        if getattr(config, "fp4", None) is None:
+            raise ValueError(
+                "--lora-base-precision=fp4 needs the nvfp4 compute config set "
+                "(run with FP4=1 / --fp4-format e2m1 --fp4-recipe nvfp4)."
+            )
+        return get_fp4_recipe(config)
+    # fp8
+    from megatron.core.fp8_utils import get_fp8_recipe
+
+    if getattr(config, "fp8", None) is None:
+        raise ValueError(
+            "--lora-base-precision=fp8 needs an fp8 compute format set "
+            "(e.g. --fp8-format e4m3)."
+        )
+    return get_fp8_recipe(config)
+
+
 def get_model_provider_func(
     args: argparse.Namespace,
     role: Literal["actor", "critic"] = "actor",
@@ -205,20 +232,49 @@ def get_model_provider_func(
 
         build_model_context = nullcontext
         build_model_context_args = {}
-        if args.fp8_param_gather:
+
+        # QLoRA: store the FROZEN LoRA base in fp8/fp4 with NO bf16 master.
+        # --lora-base-precision {fp8,fp4} builds the base inside TE fp8_model_init
+        # with preserve_high_precision_init_val=False (the base is frozen, so no
+        # master is needed). This is what lets the 744B trainer fit on fewer GPUs.
+        # Distinct from --fp8-param-gather (full-FT fp8 training, which KEEPS the
+        # master). Default 'bf16' == legacy behavior.
+        from miles.backends.megatron_utils.lora_utils import is_lora_enabled
+
+        base_prec = getattr(args, "lora_base_precision", "bf16")
+        qlora_lowp = base_prec in ("fp8", "fp4") and is_lora_enabled(args)
+        if base_prec in ("fp8", "fp4") and not is_lora_enabled(args):
+            raise ValueError(
+                f"--lora-base-precision={base_prec} requires LoRA to be enabled "
+                "(the quantized frozen base only makes sense with a bf16 adapter)."
+            )
+
+        if qlora_lowp or args.fp8_param_gather:
             try:
                 from transformer_engine.pytorch import fp8_model_init
-
-                build_model_context = fp8_model_init
-                build_model_context_args["enabled"] = True
-
-                # Check if fp8_model_init supports preserve_high_precision_init_val
-                if "preserve_high_precision_init_val" in inspect.signature(fp8_model_init).parameters:
-                    build_model_context_args["preserve_high_precision_init_val"] = True
             except Exception as e:
                 raise RuntimeError(
-                    "--fp8-param-gather requires `fp8_model_init` from TransformerEngine, but not found."
+                    "fp8/fp4 base init requires `fp8_model_init` from TransformerEngine, but not found."
                 ) from e
+
+            build_model_context = fp8_model_init
+            build_model_context_args["enabled"] = True
+            sig = inspect.signature(fp8_model_init).parameters
+
+            if qlora_lowp:
+                # frozen base -> drop the high-precision master (the memory win)
+                if "preserve_high_precision_init_val" in sig:
+                    build_model_context_args["preserve_high_precision_init_val"] = False
+                if "recipe" in sig:
+                    build_model_context_args["recipe"] = _qlora_base_recipe(config, base_prec)
+            else:
+                # legacy --fp8-param-gather (fp8 training): keep the master
+                if "preserve_high_precision_init_val" in sig:
+                    build_model_context_args["preserve_high_precision_init_val"] = True
+            logger.info(
+                f"Building frozen base under fp8_model_init: base_precision={base_prec}, "
+                f"qlora_lowp={qlora_lowp}, args={ {k: v for k, v in build_model_context_args.items() if k != 'recipe'} }"
+            )
 
         kwargs = {
             "config": config,

@@ -6,7 +6,10 @@ forward / backward / optimizer logic.
 
 from __future__ import annotations
 
+import inspect
+import logging
 from argparse import Namespace
+from contextlib import nullcontext
 from dataclasses import dataclass
 
 from megatron.core.utils import get_attr_wrapped_model
@@ -14,6 +17,8 @@ from megatron.core.utils import get_attr_wrapped_model
 from miles.utils.hf_config import load_hf_config
 
 from .lora_utils import create_lora_instance, patch_param_grad_buffer_for_colocate_mode_lora
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -139,5 +144,27 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     if args.offload_train:
         patch_param_grad_buffer_for_colocate_mode_lora()
 
-    model = provider.provide_distributed_model(wrap_with_ddp=True, ddp_config=ddp_config)
+    # QLoRA: build the FROZEN base in fp8/fp4 with no bf16 master. Wrap the model
+    # build in TE fp8_model_init(preserve_high_precision_init_val=False) so TE
+    # Linear/GroupedLinear allocate quantized weights directly (~2x/4x less base
+    # memory). The LoRA adapter (added by the pre-wrap hook) uses plain params and
+    # stays bf16/trainable. Default 'bf16' -> nullcontext (unchanged behavior).
+    base_prec = getattr(args, "lora_base_precision", "bf16")
+    build_ctx = nullcontext()
+    if base_prec in ("fp8", "fp4"):
+        from transformer_engine.pytorch import fp8_model_init
+
+        from .model_provider import _qlora_base_recipe
+
+        ctx_args = {"enabled": True}
+        sig = inspect.signature(fp8_model_init).parameters
+        if "preserve_high_precision_init_val" in sig:
+            ctx_args["preserve_high_precision_init_val"] = False
+        if "recipe" in sig:
+            ctx_args["recipe"] = _qlora_base_recipe(provider, base_prec)
+        logger.info(f"[QLoRA] building frozen base under fp8_model_init (base_precision={base_prec})")
+        build_ctx = fp8_model_init(**ctx_args)
+
+    with build_ctx:
+        model = provider.provide_distributed_model(wrap_with_ddp=True, ddp_config=ddp_config)
     return model

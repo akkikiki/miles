@@ -289,6 +289,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--rollout-model-path",
+                type=str,
+                default=None,
+                help=(
+                    "Optional model path/repo-id for the rollout SGLang engine, if it should serve a "
+                    "DIFFERENT checkpoint than --hf-checkpoint (e.g. an NVFP4-quantized base for FP4 "
+                    "rollout while the trainer keeps a bf16 master). Defaults to --hf-checkpoint. "
+                    "The trainer still syncs the (LoRA) weights into this engine each step."
+                ),
+            )
+            parser.add_argument(
                 "--model-name",
                 type=str,
                 default=None,
@@ -1221,6 +1232,20 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
                 help="Sync LoRA weights via tensor instead of file (more efficient)",
+            )
+            parser.add_argument(
+                "--lora-base-precision",
+                type=str,
+                default="bf16",
+                choices=["bf16", "fp8", "fp4"],
+                help=(
+                    "Storage precision of the FROZEN LoRA base (QLoRA). 'bf16' (default) = "
+                    "current behavior. 'fp8'/'fp4' build the frozen base directly in "
+                    "quantized weights with NO bf16 master (preserve_high_precision_init_val="
+                    "False) via TE fp8_model_init -> ~2x/4x less base GPU memory, so the "
+                    "trainer fits on fewer GPUs. The bf16 LoRA adapter stays trainable. "
+                    "Only valid with LoRA enabled. Switching bf16<->fp8<->fp4 is just this flag."
+                ),
             )
             parser.add_argument(
                 "--lora-base-cpu-backup",

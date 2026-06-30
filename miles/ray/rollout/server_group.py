@@ -121,9 +121,25 @@ class ServerGroup:
                     # Engine serves the NVFP4 base + live LoRA via the dequant
                     # path (triton grouped GEMM); needs shared-experts-fusion off.
                     "SGLANG_MOE_LORA_NONFUSED_FP4": "1",
+                    # Engine may serve a different (NVFP4) checkpoint than the
+                    # trainer's bf16 master; honored in build_server_args.
+                    "MILES_ROLLOUT_MODEL_PATH": os.environ.get("MILES_ROLLOUT_MODEL_PATH", ""),
+                    "HF_HUB_OFFLINE": os.environ.get("HF_HUB_OFFLINE", "1"),
                 }.items()
             }
             env_vars.update(dumper_utils.get_sglang_env(self.args))
+
+            # Cross-node weight-sync transport: the trainer<->engine NCCL group
+            # ("miles-pp_*") must agree with the trainer on transport. Forward the
+            # transport env (only if set) so e.g. NCCL_IB_DISABLE=1 forces TCP over
+            # NCCL_SOCKET_IFNAME when RoCE GIDs aren't routable cross-node (the IB
+            # IBV_WC_RETRY_EXC_ERR we hit). Engine intra-node stays on NVLink.
+            for _k in (
+                "NCCL_IB_DISABLE", "NCCL_SOCKET_IFNAME", "GLOO_SOCKET_IFNAME",
+                "NCCL_IB_HCA", "NCCL_NET", "NCCL_NET_GDR_LEVEL",
+            ):
+                if os.environ.get(_k):
+                    env_vars[_k] = os.environ[_k]
 
             rollout_engine = RolloutRayActor.options(
                 num_cpus=num_cpus,

@@ -308,8 +308,13 @@ class DistBucketedWeightUpdateMixin:
         with timer("update_weights_implementation"):
             # Base weight sync model:
             #   full-param RL: base weights change every step -> always sync.
-            #   LoRA RL: base is frozen -> only sync once, on the first iteration.
-            if not (self.is_lora and self._lora_base_synced):
+            #   LoRA RL: base is FROZEN and the rollout engine already holds its own
+            #     base (loaded from model_path at startup, e.g. NVFP4 for QLoRA), so
+            #     the base is NEVER synced over the cross-node weight-update group.
+            #     (The colocate/tensor path skips base via skip_base_sync; the
+            #     distributed path previously broadcast the full 744B base on iter 1,
+            #     which both wasted bandwidth and stalled the cross-node IB link.)
+            if not self.is_lora:
                 pbar = tqdm(desc=f"[{self._group_name}] Update weights", total=0) if self._is_source else None
 
                 self._gather_and_update_non_expert_weights(self._update_weight_implementation, pbar)

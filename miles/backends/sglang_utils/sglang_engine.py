@@ -635,7 +635,15 @@ def _compute_server_args(
     base = base_gpu_id if base_gpu_id is not None else get_base_gpu_id(args, rank)
     base = _to_local_gpu_id(base)
     kwargs = {
-        "model_path": args.hf_checkpoint,
+        # Rollout engine may serve a DIFFERENT checkpoint than the trainer loads
+        # (e.g. an NVFP4-quantized base for FP4 rollout while the trainer keeps a
+        # bf16 master). --rollout-model-path (serialized in args, reliable across
+        # Ray actors) overrides; MILES_ROLLOUT_MODEL_PATH env is a fallback.
+        "model_path": (
+            getattr(args, "rollout_model_path", None)
+            or os.environ.get("MILES_ROLLOUT_MODEL_PATH")
+            or args.hf_checkpoint
+        ),
         "trust_remote_code": True,
         "random_seed": args.seed + rank,
         # memory
@@ -664,6 +672,13 @@ def _compute_server_args(
 
     if sglang_overrides:
         kwargs.update(sglang_overrides)
+
+    # rollout_model_path must win over the per-group sglang_overrides model_path
+    # (which defaults to hf_checkpoint): the engine serves the NVFP4 base while
+    # the trainer keeps the bf16 master.
+    _rollout_mp = getattr(args, "rollout_model_path", None) or os.environ.get("MILES_ROLLOUT_MODEL_PATH")
+    if _rollout_mp:
+        kwargs["model_path"] = _rollout_mp
 
     if worker_type == "prefill":
         kwargs["disaggregation_mode"] = "prefill"
